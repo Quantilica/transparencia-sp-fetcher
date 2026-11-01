@@ -1,0 +1,12 @@
+_commit: v0.1.0
+_src_path: /home/dk/code/Quantilica/fetcher-template
+author_email: daniel@dkko.me
+author_name: Komesu, D.K.
+description: Coletor e conversor Lake Hive de remuneração dos servidores de SP
+domain: remuneracao
+has_lake: true
+package_name: transparencia-sp-fetcher
+package_slug: transparencia_sp_fetcher
+protocol: http
+source_id: transparencia-sp
+source_name: Portal da Transparência do Estado de São Paulo
