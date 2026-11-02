@@ -7,6 +7,7 @@ DOWNLOAD_CORRENTE_URL = (
     f"{TRANSPARENCIA_SP_BASE_URL}/Remuneracao/Download?arquivo=Remuneracao.csv"
 )
 DOWNLOAD_HISTORICO_URL = f"{TRANSPARENCIA_SP_BASE_URL}/Remuneracao/downloadhistorico"
+REMUNERACAO_PAGE_URL = f"{TRANSPARENCIA_SP_BASE_URL}/Remuneracao"
 DOWNLOAD_RAR_URL = f"{TRANSPARENCIA_SP_BASE_URL}/PortalTransparencia-Report/historico"
 DICIONARIO_URL = (
     f"{TRANSPARENCIA_SP_BASE_URL}/Dicionarios/"

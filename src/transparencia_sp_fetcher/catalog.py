@@ -1,17 +1,18 @@
-"""Dataset catalog for transparencia-sp-fetcher."""
+"""Dataset catalog for transparencia-sp-fetcher.
+
+A série histórica não é endereçável por ``ano``/``mes``: cada mês tem um
+``id`` numérico publicado na página de remuneração. O grupo ``historico`` é
+portanto descoberto a partir da tabela real; ``corrente`` e ``dicionario`` são
+estáticos.
+"""
 
 from __future__ import annotations
 
-import datetime as dt
 from typing import Any
 
-from ._catalog_base import DatasetEntry, GroupInfo, monthly_datasets, static_dataset
-from .constants import (
-    DICIONARIO_URL,
-    DOWNLOAD_CORRENTE_URL,
-    DOWNLOAD_HISTORICO_URL,
-    START_YEAR,
-)
+from ._catalog_base import DatasetEntry, GroupInfo, static_dataset
+from .client import TransparenciaSpClient
+from .constants import DICIONARIO_URL, DOWNLOAD_CORRENTE_URL
 
 __all__ = [
     "DatasetEntry",
@@ -21,7 +22,7 @@ __all__ = [
     "list_datasets",
 ]
 
-_current_year = dt.date.today().year
+_HISTORICO_CACHE: list[dict[str, Any]] | None = None
 
 GROUPS: dict[str, dict[str, Any]] = {
     "corrente": GroupInfo(
@@ -38,15 +39,7 @@ GROUPS: dict[str, dict[str, Any]] = {
     ).to_dict(),
     "historico": GroupInfo(
         name="Remuneração dos Servidores SP — Série Histórica Mensal",
-        entries=monthly_datasets(
-            "historico",
-            base_id="remuneracao",
-            name_template="Remuneração dos Servidores SP ({year}-{month:02d})",
-            url_template=f"{DOWNLOAD_HISTORICO_URL}?ano={{year}}&mes={{month}}",
-            start_year=START_YEAR,
-            end_year=_current_year,
-            ext="zip",
-        ),
+        entries=[],
     ).to_dict(),
     "dicionario": GroupInfo(
         name="Dicionário de Dados de Remuneração",
@@ -68,18 +61,43 @@ GROUP_ALIASES: dict[str, str] = {
     "sp_remuneracao": "corrente",
     "servidores": "corrente",
     "folha": "corrente",
+    "serie": "historico",
+    "historico_mensal": "historico",
 }
 
 
+def _historico_entries() -> list[dict[str, Any]]:
+    """Descobre a série histórica real (cache por processo)."""
+    global _HISTORICO_CACHE
+    if _HISTORICO_CACHE is None:
+        _HISTORICO_CACHE = [
+            DatasetEntry(
+                id=f"remuneracao_{item['label'].replace('-', '_')}",
+                base_id="remuneracao",
+                name=f"Remuneração dos Servidores SP ({item['label']})",
+                url=item["url"],
+                ext="zip",
+                group="historico",
+                year=item["ano"],
+                month=item["mes"],
+            ).to_dict()
+            for item in TransparenciaSpClient().list_historico()
+        ]
+    return _HISTORICO_CACHE
+
+
 def list_datasets(group: str | None = None) -> list[dict[str, Any]]:
-    """List datasets for a group or all groups."""
+    """Lista datasets for a group or all groups."""
     if group is None:
         entries: list[dict[str, Any]] = []
-        for g_data in GROUPS.values():
-            entries.extend(g_data["entries"])
+        entries.extend(GROUPS["corrente"]["entries"])
+        entries.extend(_historico_entries())
+        entries.extend(GROUPS["dicionario"]["entries"])
         return entries
 
     canon = GROUP_ALIASES.get(group, group)
     if canon not in GROUPS:
         raise ValueError(f"Grupo desconhecido: {group!r}")
+    if canon == "historico":
+        return list(_historico_entries())
     return list(GROUPS[canon]["entries"])
