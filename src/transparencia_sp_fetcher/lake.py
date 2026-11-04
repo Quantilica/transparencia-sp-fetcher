@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import codecs
+import csv
+import logging
 import os
 import re
 import tempfile
@@ -27,6 +29,8 @@ except ImportError as exc:
         "uv add 'transparencia-sp-fetcher[analysis]' "
         "--index https://index.quantilica.com/simple/"
     ) from exc
+
+logger = logging.getLogger(__name__)
 
 SOURCE_ID = "transparencia-sp"
 DATASETS = ["remuneracao"]
@@ -177,6 +181,51 @@ def _extract_year_month(filename: str) -> tuple[int, int] | None:
     return None
 
 
+_AUXILIARY_RE = re.compile(r"^(dicionario|leiame|leia_me|readme)", re.IGNORECASE)
+
+
+def _is_auxiliary(filename: str) -> bool:
+    """Arquivo que acompanha a série mas não é dado mensal (dicionário, leia-me).
+
+    Não tem período, não vira partição ``ano/mes`` e não é erro.
+    """
+    base = unicodedata.normalize("NFKD", filename.partition("@")[0])
+    base = base.encode("ascii", "ignore").decode("ascii")
+    return bool(_AUXILIARY_RE.match(base))
+
+
+def _is_ragged_error(exc: BaseException) -> bool:
+    return "more fields than defined" in str(exc)
+
+
+def repair_ragged_csv(src: Path, dst: Path) -> int:
+    """Reescreve ``src`` juntando os campos excedentes na última coluna.
+
+    Critério: o número de colunas é o do cabeçalho; numa linha com mais campos, os
+    excedentes são unidos, com ``;``, ao último campo (texto com separador
+    embutido). A leitura respeita aspas e uma linha continua sendo um registro:
+    nenhuma é descartada nem truncada. Devolve quantas linhas foram alteradas.
+    """
+    changed = 0
+    with (
+        open(src, encoding="utf-8", newline="") as fin,
+        open(dst, "w", encoding="utf-8", newline="") as fout,
+    ):
+        reader = csv.reader(fin, delimiter=";")
+        writer = csv.writer(fout, delimiter=";", lineterminator="\n")
+        header = next(reader, None)
+        if header is None:
+            return 0
+        width = len(header)
+        writer.writerow(header)
+        for row in reader:
+            if len(row) > width:
+                row = [*row[: width - 1], ";".join(row[width - 1 :])]
+                changed += 1
+            writer.writerow(row)
+    return changed
+
+
 _MONETARY_TERMS = (
     "remuneracao",
     "salario",
@@ -218,6 +267,22 @@ def _member_frame(csv_path: Path, partitions: dict[str, int]) -> pl.LazyFrame | 
     return lf.with_columns(
         pl.lit(partitions["ano"]).cast(pl.Int32).alias("ano"),
         pl.lit(partitions["mes"]).cast(pl.Int32).alias("mes"),
+    )
+
+
+def _write_member(
+    writer: LakeWriter,
+    csv_path: Path,
+    raw_file: Path,
+    partitions: dict[str, int],
+    key: str,
+):
+    """Escreve um membro; ``None`` se ele só tiver cabeçalho."""
+    lf = _member_frame(csv_path, partitions)
+    if lf is None:
+        return None
+    return writer.write_polars(
+        lf, src=raw_file, partitions=partitions, file_key_name=key
     )
 
 
@@ -267,6 +332,10 @@ class TransparenciaSpLakeConverter:
         active_files = select_current(all_raw_files)
 
         for raw_file in active_files:
+            if _is_auxiliary(raw_file.name):
+                logger.info("transparencia-sp: %s e auxiliar; nao convertido", raw_file)
+                res.skipped += 1
+                continue
             period = _extract_year_month(raw_file.name)
             if period is None:
                 res.errors.append(
@@ -300,15 +369,26 @@ class TransparenciaSpLakeConverter:
                         res.skipped += 1
                         continue
                     with _member_as_utf8(raw_file, kind, name) as csv_path:
-                        lf = _member_frame(csv_path, partitions)
-                        if lf is None:
+                        try:
+                            written = _write_member(
+                                writer, csv_path, raw_file, partitions, key
+                            )
+                        except Exception as exc:
+                            if not _is_ragged_error(exc):
+                                raise
+                            fixed = csv_path.with_name("membro-reparado.csv")
+                            changed = repair_ragged_csv(csv_path, fixed)
+                            logger.warning(
+                                "transparencia-sp: %s: %d linha(s) com campos a mais; "
+                                "excedente unido a ultima coluna",
+                                label,
+                                changed,
+                            )
+                            written = _write_member(
+                                writer, fixed, raw_file, partitions, key
+                            )
+                        if written is None:
                             continue
-                        written = writer.write_polars(
-                            lf,
-                            src=raw_file,
-                            partitions=partitions,
-                            file_key_name=key,
-                        )
                     if written.status == "skipped":
                         res.skipped += 1
                     else:

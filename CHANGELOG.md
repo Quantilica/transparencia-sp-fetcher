@@ -8,6 +8,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 ## [Não lançado]
 
 ### Corrigido
+- `lake`: `dicionario_remuneracao@*.xlsx` (e `leia-me`) é arquivo auxiliar, não série mensal: deixa de ser erro de período e não vira partição `ano/mes` (conta como ignorado).
+- `lake`: linha com mais campos que o cabeçalho (`RemuneracaoAtivos.txt`) não derruba mais o membro: os campos excedentes são unidos, com `;`, à última coluna, sem perder nem truncar linhas, com aviso no log.
 - Sem o extra `analysis`, o comando `convert` termina com código 1 e a instrução de instalação (`quantilica install transparencia-sp --extra analysis`), sem traceback.
 
 ## [0.2.0] - 2026-11-04
