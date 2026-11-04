@@ -31,6 +31,22 @@ Com o extra de análise analítica:
 uv add 'transparencia-sp-fetcher[analysis]' --index https://index.quantilica.com/simple/
 ```
 
+### Série antiga (RAR, jun/2012–mar/2023)
+
+O grupo `rar` baixa um RAR v4 por mês (`remuneracao_<Mês>_<AAAA>.rar`, 130 meses). Ler o
+RAR na conversão exige o extra `rar` (`libarchive-c`, wheel puro) **e** a biblioteca
+`libarchive` do sistema (Fedora: `libarchive`; Debian/Ubuntu: `libarchive13`). O `7zip`
+do Fedora não tem codec RAR. Sem isso o `convert` não falha em silêncio: cada RAR vira
+um erro contado com a instrução de instalação.
+
+```bash
+uv add 'transparencia-sp-fetcher[analysis,rar]' --index https://index.quantilica.com/simple/
+```
+
+Limitações: o servidor responde 405 a HEAD e ignora Range; a leitura é em streaming por
+membro, mas o download do RAR é inteiro (~18 MB por mês em média). A libarchive não acusa RAR
+com dado corrompido de forma confiável (só truncamento); confira o sha256 do manifesto.
+
 ## Uso via CLI
 
 ```bash

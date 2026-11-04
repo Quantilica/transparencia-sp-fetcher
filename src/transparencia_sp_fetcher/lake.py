@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-import io
+import codecs
+import os
 import re
+import tempfile
 import unicodedata
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 try:
@@ -14,6 +17,7 @@ try:
     from quantilica.analytics.lake import ConvertResult, LakeWriter
     from quantilica.core.lake import (
         DatasetDescriptor,
+        composite_file_key,
         partition_types_for,
         select_current,
     )
@@ -34,37 +38,187 @@ def _norm_col(col_name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
 
-def _read_csv_members(path: Path) -> list[tuple[str, bytes]]:
-    """Return list of (member_name, bytes) for CSV/TXT in file (or ZIP archive)."""
+class RarUnavailableError(RuntimeError):
+    """Leitura de RAR indisponível neste ambiente (falta libarchive)."""
+
+
+_RAR_SIGNATURE = b"Rar!\x1a\x07"
+_CHUNK = 1 << 20
+_MEMBER_SUFFIXES = (".csv", ".txt")
+#: Codificação por contêiner, em ordem de tentativa (decodificação estrita).
+#: RAR antigo: latin-1 (CRLF, sem BOM); ZIP/CSV atuais: UTF-8 com BOM.
+_ENCODINGS = {
+    "rar": ("latin-1",),
+    "zip": ("utf-8-sig", "cp1252"),
+    "plain": ("utf-8-sig", "cp1252"),
+}
+
+
+def _libarchive():
+    """Importa ``libarchive-c`` com erro claro quando ele ou a lib do sistema faltam."""
     try:
-        with open(path, "rb") as f:
-            header = f.read(4)
-        if header.startswith(b"PK"):
-            results = []
-            with zipfile.ZipFile(path) as zf:
-                for name in zf.namelist():
-                    if name.lower().endswith((".csv", ".txt")):
-                        results.append((name, zf.read(name)))
-            return results
-    except Exception:
-        pass
-
-    if path.suffix.lower() in (".csv", ".txt"):
-        return [(path.name, path.read_bytes())]
-    return []
+        import libarchive
+    except (ImportError, OSError) as exc:
+        raise RarUnavailableError(
+            "Ler a série antiga (RAR) requer o pacote 'libarchive-c' e a biblioteca "
+            "libarchive do sistema (Fedora: libarchive; Debian/Ubuntu: libarchive13). "
+            "O 7zip do Fedora não tem codec RAR. Instale com: "
+            "uv add 'transparencia-sp-fetcher[rar]' "
+            f"({exc})"
+        ) from exc
+    return libarchive
 
 
-def _extract_year_month(filename: str) -> tuple[int, int]:
-    """Extract (year, month) from filename or stamp."""
-    s = filename.lower()
-    m = re.search(r"(\d{4})[-_](\d{1,2})", s)
+def _container_kind(path: Path) -> str:
+    """Tipo do arquivo pela assinatura (nunca pela extensão)."""
+    with open(path, "rb") as fh:
+        head = fh.read(8)
+    if head.startswith(b"PK"):
+        return "zip"
+    if head.startswith(_RAR_SIGNATURE):
+        return "rar"
+    return "plain"
+
+
+def _is_data_member(name: str) -> bool:
+    return name.lower().endswith(_MEMBER_SUFFIXES)
+
+
+def _member_names(path: Path, kind: str) -> list[str | None]:
+    """Nomes dos membros de dados; ``[None]`` para CSV/TXT solto."""
+    if kind == "zip":
+        with zipfile.ZipFile(path) as zf:
+            return [
+                i.filename
+                for i in zf.infolist()
+                if not i.is_dir() and _is_data_member(i.filename)
+            ]
+    if kind == "rar":
+        la = _libarchive()
+        with la.file_reader(str(path)) as archive:
+            return [
+                e.pathname
+                for e in archive
+                if not e.isdir and _is_data_member(e.pathname)
+            ]
+    return [None] if path.suffix.lower() in _MEMBER_SUFFIXES else []
+
+
+def _member_chunks(path: Path, kind: str, name: str | None) -> Iterator[bytes]:
+    """Bytes do membro em blocos (streaming: nunca o membro inteiro em memória)."""
+    if kind == "zip":
+        with zipfile.ZipFile(path) as zf, zf.open(name or "") as fh:
+            while chunk := fh.read(_CHUNK):
+                yield chunk
+    elif kind == "rar":
+        la = _libarchive()
+        with la.file_reader(str(path)) as archive:
+            for entry in archive:
+                if entry.pathname == name:
+                    yield from entry.get_blocks(_CHUNK)
+                    return
+        raise FileNotFoundError(f"membro {name!r} ausente em {path.name}")
+    else:
+        with open(path, "rb") as fh:
+            while chunk := fh.read(_CHUNK):
+                yield chunk
+
+
+def _transcode_to_utf8(chunks: Iterable[bytes], dest: Path, encoding: str) -> None:
+    """Decodifica em streaming (estrito) e grava UTF-8 sem BOM."""
+    decoder = codecs.getincrementaldecoder(encoding)(errors="strict")
+    with open(dest, "w", encoding="utf-8", newline="") as out:
+        for chunk in chunks:
+            out.write(decoder.decode(chunk))
+        out.write(decoder.decode(b"", final=True))
+
+
+@contextmanager
+def _member_as_utf8(path: Path, kind: str, name: str | None) -> Iterator[Path]:
+    """CSV do membro em UTF-8 num diretório temporário.
+
+    ``QUANTILICA_LAKE_SCRATCH`` move o temporário para outro disco. Byte inválido na
+    última codificação da lista vira erro (sem ``errors="replace"``).
+    """
+    attempts = _ENCODINGS[kind]
+    with tempfile.TemporaryDirectory(
+        dir=os.environ.get("QUANTILICA_LAKE_SCRATCH") or None
+    ) as tmp:
+        dest = Path(tmp) / "membro.csv"
+        for idx, enc in enumerate(attempts):
+            try:
+                _transcode_to_utf8(_member_chunks(path, kind, name), dest, enc)
+                break
+            except UnicodeDecodeError:
+                if idx == len(attempts) - 1:
+                    raise
+        yield dest
+
+
+_PERIODO_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})[-_](0[1-9]|1[0-2])(?!\d)")
+_CARIMBO_RE = re.compile(r"@((?:19|20)\d{2})(0[1-9]|1[0-2])[0-3]\d")
+
+
+def _extract_year_month(filename: str) -> tuple[int, int] | None:
+    """Período (ano, mês) de um arquivo bruto, ou ``None`` se não for inferível.
+
+    O período vem do nome (``..._2024-05@...``). Só o arquivo **corrente**, que não
+    tem mês de referência no conteúdo, usa o mês do carimbo ``@AAAAMMDD`` (data de
+    ``Last-Modified``). Sem nenhum dos dois não há padrão: o chamador conta erro.
+    """
+    base, _, stamp = filename.partition("@")
+    m = _PERIODO_RE.search(base)
     if m:
         return int(m.group(1)), int(m.group(2))
-    # Check YYYYMM format
-    m2 = re.search(r"(\d{4})(\d{2})", s)
-    if m2:
-        return int(m2.group(1)), int(m2.group(2))
-    return 2024, 1
+    if "corrente" in base.lower():
+        c = _CARIMBO_RE.search("@" + stamp)
+        if c:
+            return int(c.group(1)), int(c.group(2))
+    return None
+
+
+_MONETARY_TERMS = (
+    "remuneracao",
+    "salario",
+    "ferias",
+    "pagamentos",
+    "licenca",
+    "abono",
+    "redutor",
+    "total_liquido",
+    "liquido",
+    "bruto",
+    "descontos",
+)
+
+
+def _is_monetary(col: str) -> bool:
+    # eras antigas: TOTDOMES/TOTBRUTO/TOTLIQ (2012) e TOT*_FINAL (2013-2016)
+    return col.startswith("tot") or any(t in col for t in _MONETARY_TERMS)
+
+
+def _member_frame(csv_path: Path, partitions: dict[str, int]) -> pl.LazyFrame | None:
+    """Plano lazy (streaming) de um membro, ou ``None`` se só tiver cabeçalho.
+
+    Tudo é lido como texto; só as colunas monetárias viram ``Float64`` (``1.400,50``).
+    """
+    lf = pl.scan_csv(csv_path, separator=";", infer_schema=False, encoding="utf8")
+    if lf.head(1).collect().height == 0:
+        return None
+    names = {c: _norm_col(c) for c in lf.collect_schema().names()}
+    lf = lf.rename(names)
+    for col in (n for n in names.values() if _is_monetary(n)):
+        lf = lf.with_columns(
+            pl.col(col)
+            .str.replace_all(r"\.", "")
+            .str.replace(",", ".", literal=True)
+            .cast(pl.Float64, strict=False)
+            .alias(col)
+        )
+    return lf.with_columns(
+        pl.lit(partitions["ano"]).cast(pl.Int32).alias("ano"),
+        pl.lit(partitions["mes"]).cast(pl.Int32).alias("mes"),
+    )
 
 
 class TransparenciaSpLakeConverter:
@@ -113,77 +267,55 @@ class TransparenciaSpLakeConverter:
         active_files = select_current(all_raw_files)
 
         for raw_file in active_files:
-            members = _read_csv_members(raw_file)
-            if not members:
+            period = _extract_year_month(raw_file.name)
+            if period is None:
+                res.errors.append(
+                    f"{raw_file.name}: período (ano/mês) não inferível do nome "
+                    "nem do carimbo; arquivo não convertido"
+                )
+                continue
+            ano, mes = period
+            partitions = {"ano": ano, "mes": mes}
+
+            try:
+                kind = _container_kind(raw_file)
+                members = _member_names(raw_file, kind)
+            except RarUnavailableError as exc:
+                res.errors.append(f"{raw_file.name}: {exc}")
+                continue
+            except Exception as exc:
+                res.errors.append(f"{raw_file.name}: arquivo ilegível: {exc}")
                 continue
 
-            ano, mes = _extract_year_month(raw_file.name)
-
-            for name, data_bytes in members:
+            for name in members:
+                label = name or raw_file.name
+                # Um arquivo de origem por membro: chave composta arquivo+membro.
+                # Só com a chave do arquivo, o LakeWriter tomaria os membros
+                # seguintes por já convertidos (mesmo sha256 e partição).
+                key = composite_file_key(raw_file, name).lower()
                 try:
-                    # Try UTF-8 with BOM first, fallback to latin-1
-                    try:
-                        text = data_bytes.decode("utf-8-sig")
-                    except UnicodeDecodeError:
-                        text = data_bytes.decode("latin-1", errors="replace")
-
-                    df = pl.read_csv(
-                        io.StringIO(text),
-                        separator=";",
-                        infer_schema_length=5000,
-                    )
-                    if df.height == 0:
+                    if writer.is_current(
+                        raw_file, partitions=partitions, file_key_name=key
+                    ):
+                        res.skipped += 1
                         continue
-
-                    # Normalize column names
-                    df = df.rename({c: _norm_col(c) for c in df.columns})
-
-                    # Numeric cleaning for monetary columns (e.g. 1.400,00 -> 1400.00)
-                    monetary_cols = [
-                        c
-                        for c in df.columns
-                        if any(
-                            term in c
-                            for term in (
-                                "remuneracao",
-                                "salario",
-                                "ferias",
-                                "pagamentos",
-                                "licenca",
-                                "abono",
-                                "redutor",
-                                "total_liquido",
-                                "liquido",
-                                "bruto",
-                                "descontos",
-                            )
+                    with _member_as_utf8(raw_file, kind, name) as csv_path:
+                        lf = _member_frame(csv_path, partitions)
+                        if lf is None:
+                            continue
+                        written = writer.write_polars(
+                            lf,
+                            src=raw_file,
+                            partitions=partitions,
+                            file_key_name=key,
                         )
-                    ]
-                    for col in monetary_cols:
-                        df = df.with_columns(
-                            pl.col(col)
-                            .cast(pl.Utf8)
-                            .str.replace_all(r"\.", "")
-                            .str.replace(",", ".")
-                            .cast(pl.Float64, strict=False)
-                            .alias(col)
-                        )
-
-                    # Add partition columns
-                    df = df.with_columns(
-                        pl.lit(ano).cast(pl.Int32).alias("ano"),
-                        pl.lit(mes).cast(pl.Int32).alias("mes"),
-                    )
-
-                    writer.write_polars(
-                        df,
-                        src=raw_file,
-                        partitions={"ano": ano, "mes": mes},
-                    )
-                    res.converted += 1
+                    if written.status == "skipped":
+                        res.skipped += 1
+                    else:
+                        res.converted += 1
                 except Exception as exc:
                     res.errors.append(
-                        f"Erro ao converter {name} em {raw_file.name}: {exc}"
+                        f"Erro ao converter {label} em {raw_file.name}: {exc}"
                     )
 
         return res
