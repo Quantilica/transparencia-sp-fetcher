@@ -33,6 +33,11 @@ analysis = [
     "polars>=1.0.0",
     "quantilica-analytics>=0.7.0",
 ]
+# Série antiga (RAR): libarchive-c é wheel puro, mas exige a biblioteca libarchive do
+# sistema (Fedora: libarchive; Debian/Ubuntu: libarchive13). O 7zip do Fedora não lê RAR.
+rar = [
+    "libarchive-c>=5.1",
+]
 
 [project.urls]
 Homepage = "https://github.com/Quantilica/transparencia-sp-fetcher"

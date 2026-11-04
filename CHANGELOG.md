@@ -7,7 +7,22 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não lançado]
 
+### Adicionado
+- Série antiga em RAR (jun/2012–mar/2023, 130 meses) como grupo `rar` (aliases
+  `serie_antiga`, `historico_rar`): `rar_url` monta o nome com o mês por extenso
+  (`Março` até 2016, `Marco` de 2017 em diante). O lake lê o RAR em streaming por
+  membro via `libarchive-c` (extra `rar`), com erro claro (`RarUnavailableError`) se a
+  libarchive faltar. Substitui a constante morta `DOWNLOAD_RAR_URL`.
+
 ### Corrigido
+- Lake: cada membro (ZIP, RAR ou CSV solto) é um arquivo de origem próprio, com chave
+  composta `arquivo__membro`; antes só o primeiro membro chegava ao lake. Leitura em
+  streaming com decodificação estrita (`latin-1` no RAR; `utf-8-sig` e depois `cp1252`
+  no resto), sem `errors="replace"`: byte inválido vira erro contado.
+- Lake: fim do default silencioso `2024-01`. O período vem do nome; só o arquivo
+  corrente (sem mês de referência no conteúdo) usa o mês do carimbo `@AAAAMMDD`. Sem
+  nenhum dos dois, o arquivo não é convertido e o erro é contado. Colunas monetárias
+  das eras antigas (`TOTMES_FINAL`, `TOTBRUTO`, `TOTLIQ`...) também são numéricas.
 - Política de frescor volta a F2 (`HEAD_FALLBACK_GET`): `REMOTE_ONLY` (F3, para fontes sem validadores) causava re-download diário de fontes com Last-Modified/ETag, porque descartava o Last-Modified e o nome do arquivo caía em `@hoje`.
 - A série histórica usa os `id` numéricos publicados na página
   (`downloadhistorico?id=71&f=zip`), não `ano`/`mes` (404 em todos os meses).
