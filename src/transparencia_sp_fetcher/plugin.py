@@ -47,7 +47,7 @@ def convert(
     try:
         from transparencia_sp_fetcher import lake
     except ImportError as exc:
-        raise RuntimeError(
+        raise ImportError(
             "Conversão para o lake requer o extra 'analysis'. "
             "Instale com: quantilica install transparencia-sp --extra analysis"
         ) from exc
