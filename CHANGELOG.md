@@ -5,12 +5,11 @@ Todas as alterações notáveis neste projeto serão documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
-## [Não lançado]
+## [0.2.1] - 2026-11-04
 
 ### Corrigido
 - `lake`: `dicionario_remuneracao@*.xlsx` (e `leia-me`) é arquivo auxiliar, não série mensal: deixa de ser erro de período e não vira partição `ano/mes` (conta como ignorado).
 - `lake`: linha com mais campos que o cabeçalho (`RemuneracaoAtivos.txt`) não derruba mais o membro: os campos excedentes são unidos, com `;`, à última coluna, sem perder nem truncar linhas, com aviso no log.
-- Sem o extra `analysis`, o comando `convert` termina com código 1 e a instrução de instalação (`quantilica install transparencia-sp --extra analysis`), sem traceback.
 
 ## [0.2.0] - 2026-11-04
 
@@ -35,6 +34,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
   (`downloadhistorico?id=71&f=zip`), não `ano`/`mes` (404 em todos os meses).
 - A descoberta sonda os cabeçalhos e ignora meses ainda não publicados (404)
   ou bloqueados (405), evitando alerta diário falso.
+- Sem o extra `analysis`, o comando `convert` termina com código 1 e a instrução de instalação (`quantilica install transparencia-sp --extra analysis`), sem traceback.
 
 ## [0.1.0] - 2026-11-01
 
