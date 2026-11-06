@@ -7,6 +7,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não lançado]
 
+## [0.2.2] - 2026-11-06
+
 ### Corrigido
 - A sondagem dos arquivos históricos registra em `warning` o mês e o motivo quando um arquivo está indisponível, em vez de descartá-lo sem rastro.
 - CI: instala a biblioteca `libarchive` do sistema e sincroniza com o extra `rar`, para que os testes de leitura de RAR deixem de ser pulados.
