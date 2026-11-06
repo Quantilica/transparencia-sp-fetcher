@@ -99,7 +99,13 @@ class TransparenciaSpClient:
             # evita transformar isso em erro de download no cron.
             try:
                 probe = self.client.head_or_get(item["url"])
-            except Exception:  # noqa: BLE001 - indisponível hoje, volta amanhã
+            except Exception as exc:  # noqa: BLE001 - indisponível hoje, volta amanhã
+                logger.warning(
+                    "Histórico %s indisponível agora (%s): %s",
+                    item["label"],
+                    item["url"],
+                    exc,
+                )
                 continue
             if probe.status_code in (200, 206):
                 arquivos.append(item)

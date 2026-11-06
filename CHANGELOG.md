@@ -5,6 +5,12 @@ Todas as alterações notáveis neste projeto serão documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Não lançado]
+
+### Corrigido
+- A sondagem dos arquivos históricos registra em `warning` o mês e o motivo quando um arquivo está indisponível, em vez de descartá-lo sem rastro.
+- CI: instala a biblioteca `libarchive` do sistema e sincroniza com o extra `rar`, para que os testes de leitura de RAR deixem de ser pulados.
+
 ## [0.2.1] - 2026-11-04
 
 ### Corrigido
