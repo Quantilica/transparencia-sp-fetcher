@@ -7,6 +7,9 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não lançado]
 
+### Adicionado
+- Documentação dos dados em `docs/`: página da fonte, página do dataset `remuneracao` com dicionário de todas as variáveis (por era) e esquema de referência do lake, verificados por `tests/test_docs.py`.
+
 ## [0.2.2] - 2026-11-06
 
 ### Corrigido

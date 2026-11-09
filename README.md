@@ -63,6 +63,10 @@ quantilica transparencia-sp sync -o /data/transparencia-sp
 quantilica transparencia-sp convert /data/transparencia-sp /data/lake
 ```
 
+## Documentação dos dados
+
+O que o dataset contém, de onde vem, como chega ao lake e os cuidados de uso: [docs/README.md](docs/README.md).
+
 ## Licença
 
 Distribuído sob licença MIT. Consulte [LICENSE](LICENSE) para mais detalhes.

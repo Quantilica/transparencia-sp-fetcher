@@ -1,0 +1,204 @@
+{
+  "fonte": "transparencia-sp",
+  "dataset": "remuneracao",
+  "gerado_em": "2026-11-09T14:02:01+00:00",
+  "particoes": [
+    "ano",
+    "mes"
+  ],
+  "colunas": [
+    {
+      "nome": "nome",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "cargo",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "orgao",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "totdomes",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "totbruto",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "totliq",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "remuneracao_do_mes",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "ferias_e_13o_salario",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "pagamentos_eventuais",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "licenca_premio_indenizada",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "abono_permanencia_outras_indenizacoes",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "redutor_salarial",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "total_liquido_r",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "grupo",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "remuneracao",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "ferias_13o",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "licenca_premio",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "abono_permanencia",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "redutor",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "rendimento_liquido",
+      "tipos": [
+        "double"
+      ]
+    },
+    {
+      "nome": "situacao_funcional",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "regime_de_contratacao",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "jornada_de_trabalho",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "referencia",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "grau",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "data_de_ingresso",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "data_de_nomeacao_no_cargo",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "cpf",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "situacao_de_desligamento",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "jornada",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "ingresso",
+      "tipos": [
+        "large_string"
+      ]
+    },
+    {
+      "nome": "nomeacao",
+      "tipos": [
+        "large_string"
+      ]
+    }
+  ],
+  "arquivos": 5
+}
