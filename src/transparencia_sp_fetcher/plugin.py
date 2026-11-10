@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from quantilica.cli.sdk import FetcherApp, make_resolve_groups
+from quantilica.core.registry import FetcherInfo
 from quantilica.core.sync import FreshnessPolicy
 
 from .catalog import GROUP_ALIASES, GROUPS, list_datasets
@@ -27,6 +28,15 @@ def path_builder(
 fetcher = FetcherApp(
     name="transparencia-sp",
     help="Coletor e conversor Lake Hive de remuneração dos servidores de SP",
+    info=FetcherInfo(
+        id="transparencia-sp",
+        nome="Portal da Transparência SP - Remuneração",
+        aliases=("transparencia_sp",),
+        orgao="Controladoria Geral do Estado de São Paulo (CGE-SP)",
+        homepage="https://www.transparencia.sp.gov.br",
+        cadencia="monthly",
+        dominio="fiscal",
+    ),
     groups_dict=GROUPS,
     aliases_dict=GROUP_ALIASES,
     list_datasets=list_datasets,
