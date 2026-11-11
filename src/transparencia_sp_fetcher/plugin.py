@@ -33,6 +33,10 @@ fetcher = FetcherApp(
         nome="Portal da Transparência SP - Remuneração",
         aliases=("transparencia_sp",),
         orgao="Controladoria Geral do Estado de São Paulo (CGE-SP)",
+        licenca=(
+            "Sem licença declarada; dados públicos pela Lei 12.527/2011 (LAI) "
+            "e Decreto 8.777/2016"
+        ),
         homepage="https://www.transparencia.sp.gov.br",
         cadencia="monthly",
         dominio="fiscal",
