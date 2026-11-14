@@ -1,6 +1,6 @@
 [project]
 name = "transparencia-sp-fetcher"
-version = "0.2.4"
+version = "0.2.5"
 description = "Coletor e conversor Lake Hive de remuneração dos servidores de SP"
 readme = "README.md"
 authors = [

@@ -7,6 +7,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não lançado]
 
+## [0.2.5] - 2026-11-14
+
 ### Corrigido
 - Série antiga (RAR) do `remuneracao` volta a ser lida onde não há `libarchive` (como o Windows do lake): sem ela, a conversão recorre ao executável do 7-Zip (`7z`/`7z.exe` no PATH, `%ProgramFiles%\7-Zip\7z.exe` ou o caminho de `QUANTILICA_7Z`), listando os membros com `7z l -slt -ba` e lendo cada um em streaming com `7z e -so`. A `libarchive` continua sendo a primeira opção. Código de saída diferente de zero vira erro com o stderr do 7z; o 7z sem codec RAR (o do Fedora) e a falta de ambos dão `RarUnavailableError` citando as duas saídas.
 
