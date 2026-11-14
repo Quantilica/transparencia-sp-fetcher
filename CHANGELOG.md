@@ -7,6 +7,9 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não lançado]
 
+### Adicionado
+- Testes: identidade do registro conferida.
+
 ## [0.2.5] - 2026-11-14
 
 ### Corrigido
