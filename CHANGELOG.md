@@ -7,6 +7,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não lançado]
 
+## [0.2.4] - 2026-11-14
+
 ### Corrigido
 - `remuneracao`: CSV sem linha de cabeçalho (`remuneracao_2026-05`, o portal publicou os membros sem ela) não vira mais colunas com nome de dado (`a_ucena_rosa...`, `1_400_00`, `''`, `duplicated_N`). Sem cabeçalho (a primeira linha traz valores monetários ou datas), a linha é registro e as 18 colunas ganham os nomes atuais (`nome`, `cargo`, ..., `data_de_nomeacao_no_cargo`); com outra largura o membro dá erro. Arquivos com cabeçalho não mudam.
 
