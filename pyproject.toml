@@ -34,7 +34,8 @@ analysis = [
     "quantilica-analytics>=0.9.0",
 ]
 # Série antiga (RAR): libarchive-c é wheel puro, mas exige a biblioteca libarchive do
-# sistema (Fedora: libarchive; Debian/Ubuntu: libarchive13). O 7zip do Fedora não lê RAR.
+# sistema (Fedora: libarchive; Debian/Ubuntu: libarchive13). O 7zip do Fedora não lê RAR;
+# o 7-Zip oficial (Windows) é a alternativa sem libarchive.
 rar = [
     "libarchive-c>=5.1",
 ]

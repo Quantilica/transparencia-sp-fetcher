@@ -34,10 +34,16 @@ uv add 'transparencia-sp-fetcher[analysis]' --index https://index.quantilica.com
 ### Série antiga (RAR, jun/2012–mar/2023)
 
 O grupo `rar` baixa um RAR v4 por mês (`remuneracao_<Mês>_<AAAA>.rar`, 130 meses). Ler o
-RAR na conversão exige o extra `rar` (`libarchive-c`, wheel puro) **e** a biblioteca
-`libarchive` do sistema (Fedora: `libarchive`; Debian/Ubuntu: `libarchive13`). O `7zip`
-do Fedora não tem codec RAR. Sem isso o `convert` não falha em silêncio: cada RAR vira
-um erro contado com a instrução de instalação.
+RAR na conversão exige **uma** destas opções:
+
+1. o extra `rar` (`libarchive-c`, wheel puro) **e** a biblioteca `libarchive` do sistema
+   (Fedora: `libarchive`; Debian/Ubuntu: `libarchive13`); é a primeira opção tentada;
+2. o 7-Zip oficial com codec RAR (`7z`/`7z.exe` no PATH ou em `%ProgramFiles%\7-Zip`; a
+   variável `QUANTILICA_7Z` aponta outro executável). Útil no Windows, onde não há
+   libarchive. O `7zip` do Fedora não tem codec RAR.
+
+Sem nenhuma das duas o `convert` não falha em silêncio: cada RAR vira um erro contado com
+a instrução de instalação.
 
 ```bash
 uv add 'transparencia-sp-fetcher[analysis,rar]' --index https://index.quantilica.com/simple/

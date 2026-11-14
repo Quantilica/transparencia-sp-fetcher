@@ -7,6 +7,8 @@ import csv
 import logging
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import unicodedata
 import zipfile
@@ -43,7 +45,7 @@ def _norm_col(col_name: str) -> str:
 
 
 class RarUnavailableError(RuntimeError):
-    """Leitura de RAR indisponível neste ambiente (falta libarchive)."""
+    """Leitura de RAR indisponível neste ambiente (sem libarchive nem 7-Zip com RAR)."""
 
 
 _RAR_SIGNATURE = b"Rar!\x1a\x07"
@@ -58,19 +60,129 @@ _ENCODINGS = {
 }
 
 
+_RAR_HELP = (
+    "Ler a série antiga (RAR) requer UMA destas opções: (1) o pacote 'libarchive-c' "
+    "e a biblioteca libarchive do sistema (Fedora: libarchive; Debian/Ubuntu: "
+    "libarchive13), com `uv add 'transparencia-sp-fetcher[rar]'`; ou (2) o 7-Zip "
+    "oficial com codec RAR (7z/7z.exe no PATH ou em %ProgramFiles%\\7-Zip; "
+    "QUANTILICA_7Z aponta outro executável). O 7zip do Fedora não tem codec RAR."
+)
+#: Mensagens do 7-Zip para arquivo que ele não abre (sem codec RAR, ou arquivo ruim).
+_SEVENZIP_NOT_ARCHIVE = re.compile(
+    r"can ?not open the file as archive|is not archive|unsupported", re.IGNORECASE
+)
+
+
 def _libarchive():
     """Importa ``libarchive-c`` com erro claro quando ele ou a lib do sistema faltam."""
     try:
         import libarchive
     except (ImportError, OSError) as exc:
         raise RarUnavailableError(
-            "Ler a série antiga (RAR) requer o pacote 'libarchive-c' e a biblioteca "
-            "libarchive do sistema (Fedora: libarchive; Debian/Ubuntu: libarchive13). "
-            "O 7zip do Fedora não tem codec RAR. Instale com: "
-            "uv add 'transparencia-sp-fetcher[rar]' "
-            f"({exc})"
+            f"libarchive indisponível ({exc}). {_RAR_HELP}"
         ) from exc
     return libarchive
+
+
+def _sevenzip() -> str | None:
+    """Executável do 7-Zip: ``QUANTILICA_7Z``, PATH (7z/7z.exe/7zz) ou ProgramFiles."""
+    override = os.environ.get("QUANTILICA_7Z")
+    if override:
+        return override
+    for exe in ("7z", "7z.exe", "7zz"):
+        found = shutil.which(exe)
+        if found:
+            return found
+    for var in ("ProgramFiles", "ProgramW6432"):
+        base = os.environ.get(var)
+        if base:
+            candidate = Path(base) / "7-Zip" / "7z.exe"
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def _rar_backend() -> tuple[str, object]:
+    """``("libarchive", módulo)`` se houver; senão ``("7z", executável)``.
+
+    Sem nenhum dos dois: ``RarUnavailableError`` (texto cita as duas saídas).
+    """
+    try:
+        return "libarchive", _libarchive()
+    except RarUnavailableError as exc:
+        exe = _sevenzip()
+        if exe is None:
+            raise RarUnavailableError(
+                f"{exc} Nenhum executável 7z encontrado."
+            ) from exc
+        return "7z", exe
+
+
+def _sevenzip_error(exe: str, path: Path, detail: str) -> RuntimeError:
+    detail = detail.strip()
+    if _SEVENZIP_NOT_ARCHIVE.search(detail):
+        return RarUnavailableError(
+            f"{exe} não abriu {path.name} ({detail}): o 7z sem codec RAR (como o do "
+            f"Fedora) ou o arquivo está corrompido. {_RAR_HELP}"
+        )
+    return RuntimeError(f"{exe} falhou em {path.name}: {detail}")
+
+
+def _sevenzip_list(exe: str, path: Path) -> list[str]:
+    """Caminhos dos membros-arquivo (sem pastas) via ``7z l -slt -ba``."""
+    proc = subprocess.run(
+        [exe, "l", "-slt", "-ba", "-sccUTF-8", "-y", "--", str(path)],
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    out = proc.stdout.decode("utf-8")
+    if proc.returncode != 0:
+        err = proc.stderr.decode("utf-8", errors="replace")
+        raise _sevenzip_error(
+            exe, path, f"{err}\n{out}".strip() or f"código {proc.returncode}"
+        )
+    names: list[str] = []
+    for block in re.split(r"\r?\n\r?\n", out):
+        fields: dict[str, str] = {}
+        for line in block.splitlines():
+            key, sep, value = line.partition(" = ")
+            if sep:
+                fields.setdefault(key.strip(), value)
+        if "Path" not in fields:
+            continue
+        attrs = fields.get("Attributes", "").split()
+        if fields.get("Folder") == "+" or any(a[:1] in "Dd" for a in attrs):
+            continue
+        names.append(fields["Path"])
+    return names
+
+
+def _sevenzip_chunks(exe: str, path: Path, name: str) -> Iterator[bytes]:
+    """Membro em blocos via ``7z e -so`` (stdout em streaming; stderr em arquivo)."""
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(
+            [exe, "e", "-so", "-bd", "-y", "-spd", "-sccUTF-8", "--", str(path), name],
+            stdout=subprocess.PIPE,
+            stderr=err,
+            stdin=subprocess.DEVNULL,
+        )
+        assert proc.stdout is not None
+        total = 0
+        try:
+            while chunk := proc.stdout.read(_CHUNK):
+                total += len(chunk)
+                yield chunk
+        finally:
+            proc.stdout.close()
+            rc = proc.wait()
+        if rc != 0:
+            err.seek(0)
+            detail = err.read().decode("utf-8", errors="replace")
+            raise _sevenzip_error(exe, path, detail or f"código {rc}")
+        if total == 0:
+            # 7z devolve 0 sem erro quando o nome não casa com nenhum membro
+            raise FileNotFoundError(f"membro {name!r} ausente ou vazio em {path.name}")
 
 
 def _container_kind(path: Path) -> str:
@@ -98,8 +210,10 @@ def _member_names(path: Path, kind: str) -> list[str | None]:
                 if not i.is_dir() and _is_data_member(i.filename)
             ]
     if kind == "rar":
-        la = _libarchive()
-        with la.file_reader(str(path)) as archive:
+        backend, tool = _rar_backend()
+        if backend == "7z":
+            return [n for n in _sevenzip_list(str(tool), path) if _is_data_member(n)]
+        with tool.file_reader(str(path)) as archive:  # type: ignore[attr-defined]
             return [
                 e.pathname
                 for e in archive
@@ -115,8 +229,11 @@ def _member_chunks(path: Path, kind: str, name: str | None) -> Iterator[bytes]:
             while chunk := fh.read(_CHUNK):
                 yield chunk
     elif kind == "rar":
-        la = _libarchive()
-        with la.file_reader(str(path)) as archive:
+        backend, tool = _rar_backend()
+        if backend == "7z":
+            yield from _sevenzip_chunks(str(tool), path, name or "")
+            return
+        with tool.file_reader(str(path)) as archive:  # type: ignore[attr-defined]
             for entry in archive:
                 if entry.pathname == name:
                     yield from entry.get_blocks(_CHUNK)
