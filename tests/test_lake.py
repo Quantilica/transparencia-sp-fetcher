@@ -124,3 +124,82 @@ def test_linha_com_campos_a_mais_vai_para_a_ultima_coluna(tmp_path: Path) -> Non
     ]
     assert df["cargo"][2] == "MEDICO; PLANTAO"
     assert df["total_liquido"].to_list() == [1000.0, 2000.0, 3000.0, 4000.0]
+
+
+_CABECALHO = (
+    "NOME;CARGO;ORGÃO;REMUNERAÇÃO;FÉRIAS/13º;PAGAMENTOS EVENTUAIS;LICENÇA PRÊMIO;"
+    "ABONO PERMANÊNCIA;REDUTOR;RENDIMENTO LÍQUIDO;GRUPO;SITUAÇÃO FUNCIONAL;"
+    "REGIME DE CONTRATAÇÃO;JORNADA DE TRABALHO;REFERENCIA;GRAU;DATA DE INGRESSO;"
+    "DATA DE NOMEAÇÃO NO CARGO"
+)
+_ATIVO = (
+    "A UCENA ROSA REGINALDO SILVA  ;ESTAGIARIO;FUND.PE.ANCHIETA;1.400,00;0,00;0,00;"
+    "0,00;0,00;0,00;1.400,00;ATIVOS;EM EXERCICIO NORMAL DE TRABALHO;BOLSISTA;00;;;;"
+    "16/06/2025"
+)
+_PENSIONISTA = (
+    "AARON GABRIEL MIRANDA         ;BENEFICIARIO DE SERVIDOR;SPPREV;2.606,25;0,00;"
+    "0,00;0,00;0,00;0,00;2.606,25;PENSIONISTA;;;00;;;07/08/2008;07/02/2009"
+)
+
+
+def _convert_zip(tmp_path: Path, member: str, text: str):
+    raw = tmp_path / "raw" / "remuneracao"
+    raw.mkdir(parents=True)
+    with zipfile.ZipFile(raw / "remuneracao_2026-05@20260817.zip", "w") as zf:
+        zf.writestr(member, text.encode("utf-8-sig"))
+    res = converter.convert(raw.parent, tmp_path / "lake")
+    ds = tmp_path / "lake" / "transparencia-sp" / "remuneracao"
+    return res, ds
+
+
+def test_csv_sem_cabecalho_usa_nomes_atuais_e_nao_perde_linha(tmp_path: Path) -> None:
+    """Regressão 2026-05: sem cabeçalho, a 1ª linha dava nome às colunas (e ``''``)."""
+    # o portal publicou cada linha em dobro; o lake espelha o que veio
+    texto = "\n".join([_ATIVO, _ATIVO, _PENSIONISTA, _PENSIONISTA]) + "\n"
+    res, ds = _convert_zip(tmp_path, "RemuneracaoPensionistas.csv", texto)
+    assert res.errors == [], res.errors
+    df = pl.read_parquet(next((ds / "ano=2026" / "mes=5").glob("*.parquet")))
+    assert df.columns[:18] == [
+        "nome",
+        "cargo",
+        "orgao",
+        "remuneracao",
+        "ferias_13o",
+        "pagamentos_eventuais",
+        "licenca_premio",
+        "abono_permanencia",
+        "redutor",
+        "rendimento_liquido",
+        "grupo",
+        "situacao_funcional",
+        "regime_de_contratacao",
+        "jornada_de_trabalho",
+        "referencia",
+        "grau",
+        "data_de_ingresso",
+        "data_de_nomeacao_no_cargo",
+    ]
+    assert all(c.strip() and "duplicated" not in c for c in df.columns)
+    assert df.height == 4  # a primeira linha é registro, não cabeçalho
+    assert df["nome"][0] == "A UCENA ROSA REGINALDO SILVA  "
+    assert df["rendimento_liquido"].to_list() == [1400.0, 1400.0, 2606.25, 2606.25]
+
+
+def test_csv_com_cabecalho_nao_muda(tmp_path: Path) -> None:
+    """Com cabeçalho (2026-04), a 1ª linha segue sendo o cabeçalho."""
+    texto = "\n".join([_CABECALHO, _ATIVO, _PENSIONISTA]) + "\n"
+    res, ds = _convert_zip(tmp_path, "Remuneracao.csv", texto)
+    assert res.errors == [], res.errors
+    df = pl.read_parquet(next((ds / "ano=2026" / "mes=5").glob("*.parquet")))
+    assert df.height == 2
+    assert df.columns[:3] == ["nome", "cargo", "orgao"]
+    assert df.columns[4] == "ferias_13o"
+
+
+def test_csv_sem_cabecalho_de_outra_largura_da_erro(tmp_path: Path) -> None:
+    """Sem cabeçalho e fora das 18 colunas atuais, os nomes não se adivinham."""
+    res, _ = _convert_zip(tmp_path, "Remuneracao.csv", "FULANO;ANALISTA;1.000,00\n")
+    assert res.converted == 0
+    assert len(res.errors) == 1
+    assert "sem cabeçalho" in res.errors[0]

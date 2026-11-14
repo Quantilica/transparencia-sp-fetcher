@@ -246,14 +246,77 @@ def _is_monetary(col: str) -> bool:
     return col.startswith("tot") or any(t in col for t in _MONETARY_TERMS)
 
 
+#: Cabeçalho das planilhas atuais (18 colunas), como o portal o publica
+#: (``remuneracao_2026-04``). Usado quando o membro vem **sem** cabeçalho.
+CABECALHO_ATUAL = (
+    "NOME",
+    "CARGO",
+    "ORGÃO",
+    "REMUNERAÇÃO",
+    "FÉRIAS/13º",
+    "PAGAMENTOS EVENTUAIS",
+    "LICENÇA PRÊMIO",
+    "ABONO PERMANÊNCIA",
+    "REDUTOR",
+    "RENDIMENTO LÍQUIDO",
+    "GRUPO",
+    "SITUAÇÃO FUNCIONAL",
+    "REGIME DE CONTRATAÇÃO",
+    "JORNADA DE TRABALHO",
+    "REFERENCIA",
+    "GRAU",
+    "DATA DE INGRESSO",
+    "DATA DE NOMEAÇÃO NO CARGO",
+)
+# valor de dado, que nenhum nome de coluna tem: ``1.400,00`` ou ``16/06/2025``
+_VALOR_DE_DADO = re.compile(r"\d{1,3}(\.\d{3})*,\d{2}|\d{2}/\d{2}/\d{4}")
+
+
+def _first_row(csv_path: Path) -> list[str]:
+    with open(csv_path, encoding="utf-8", newline="") as fh:
+        return next(csv.reader(fh, delimiter=";"), [])
+
+
+def _headerless_columns(csv_path: Path) -> list[str] | None:
+    """Nomes das colunas quando o membro não tem cabeçalho; ``None`` se tem.
+
+    Há meses (``remuneracao_2026-05``) em que o portal publica o CSV sem a linha
+    de cabeçalho: a primeira linha já é um registro, com valores monetários e
+    datas. Lida como cabeçalho, ela dava nome às colunas (``a_ucena_rosa...``,
+    ``1_400_00``, ``''``). Com 18 campos vale o cabeçalho atual; em outra largura
+    não há como adivinhar os nomes, e o membro dá erro.
+    """
+    first = _first_row(csv_path)
+    if not any(_VALOR_DE_DADO.fullmatch(v.strip()) for v in first):
+        return None
+    if len(first) != len(CABECALHO_ATUAL):
+        raise ValueError(
+            f"CSV sem cabeçalho e com {len(first)} colunas (esperadas "
+            f"{len(CABECALHO_ATUAL)}); nomes não inferíveis"
+        )
+    return [_norm_col(c) for c in CABECALHO_ATUAL]
+
+
 def _member_frame(csv_path: Path, partitions: dict[str, int]) -> pl.LazyFrame | None:
     """Plano lazy (streaming) de um membro, ou ``None`` se só tiver cabeçalho.
 
     Tudo é lido como texto; só as colunas monetárias viram ``Float64`` (``1.400,50``).
+    Sem linha de cabeçalho, a primeira linha é dado e os nomes são os atuais.
     """
-    lf = pl.scan_csv(csv_path, separator=";", infer_schema=False, encoding="utf8")
-    if lf.head(1).collect().height == 0:
-        return None
+    sem_cabecalho = _headerless_columns(csv_path)
+    if sem_cabecalho is None:
+        lf = pl.scan_csv(csv_path, separator=";", infer_schema=False, encoding="utf8")
+        if lf.head(1).collect().height == 0:
+            return None
+    else:
+        lf = pl.scan_csv(
+            csv_path,
+            separator=";",
+            infer_schema=False,
+            encoding="utf8",
+            has_header=False,
+            new_columns=sem_cabecalho,
+        )
     names = {c: _norm_col(c) for c in lf.collect_schema().names()}
     lf = lf.rename(names)
     for col in (n for n in names.values() if _is_monetary(n)):
