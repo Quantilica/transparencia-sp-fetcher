@@ -18,7 +18,13 @@ from pathlib import Path
 
 try:
     import polars as pl
-    from quantilica.analytics.lake import ConvertResult, LakeWriter
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from quantilica.analytics.lake import (
+        ConvertResult,
+        LakeWriter,
+        footer_from_metadata,
+    )
     from quantilica.core.lake import (
         DatasetDescriptor,
         composite_file_key,
@@ -466,6 +472,30 @@ def _write_member(
     )
 
 
+def _recorded_keys(dataset_dir: Path) -> dict[str, set[str]]:
+    """``{arquivo de origem: chaves de arquivo}`` lidos só dos rodapés do dataset.
+
+    Serve para contar os membros de um arquivo pulado sem abri-lo: cada membro
+    convertido deixou um ``file_key`` no rodapé do seu Parquet, citando o arquivo
+    de origem.
+    """
+    found: dict[str, set[str]] = {}
+    if not dataset_dir.is_dir():
+        return found
+    for parquet in sorted(dataset_dir.rglob("*.parquet")):
+        if ".tmp" in parquet.relative_to(dataset_dir).parts:
+            continue
+        try:
+            footer = footer_from_metadata(pq.read_metadata(parquet))
+        except (OSError, pa.ArrowException):
+            continue
+        origin = footer.get("quantilica.origin_file")
+        key = footer.get("quantilica.file_key")
+        if origin and key:
+            found.setdefault(origin, set()).add(key)
+    return found
+
+
 class TransparenciaSpLakeConverter:
     """Converts SP public servant payroll data into Universal Hive Parquet Lake."""
 
@@ -507,6 +537,8 @@ class TransparenciaSpLakeConverter:
             lake_path / self.source_id / "remuneracao", descriptor, force=force
         )
 
+        recorded: dict[str, set[str]] | None = None
+
         # Gather active raw files
         all_raw_files = [f for f in input_path.rglob("*") if f.is_file()]
         active_files = select_current(all_raw_files)
@@ -526,7 +558,20 @@ class TransparenciaSpLakeConverter:
             ano, mes = period
             partitions = {"ano": ano, "mes": mes}
 
+            # Sidecar de manifesto não é dado (não tem membros): nem abri-lo.
+            if raw_file.name.endswith(".manifest.json"):
+                continue
+
             try:
+                # Decisão de pular antes de qualquer acesso ao bruto (o bruto pode
+                # estar em disco de rede lento): só o sidecar e os rodapés do lake.
+                # Os membros de um contêiner só são conhecidos depois de aberto;
+                # basta que todo Parquet que cita o arquivo registre o sha256 atual.
+                if writer.origin_recorded(raw_file):
+                    if recorded is None:
+                        recorded = _recorded_keys(writer.dataset_dir)
+                    res.skipped += max(len(recorded.get(raw_file.name, ())), 1)
+                    continue
                 kind = _container_kind(raw_file)
                 members = _member_names(raw_file, kind)
             except RarUnavailableError as exc:

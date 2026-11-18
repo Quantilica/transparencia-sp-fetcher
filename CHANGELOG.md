@@ -7,10 +7,14 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não lançado]
 
+### Corrigido
+- `lake`: o build sem mudança não lê mais o bruto. Antes de qualquer acesso ao arquivo (assinatura, diretório central do ZIP, listagem do RAR), o conversor confere `origin_recorded`; quando todo Parquet que cita o arquivo registra o sha256 atual (do sidecar, sem ler o arquivo), conta os membros pelos rodapés e segue sem abri-lo. Os sidecars `.manifest.json` deixam de ser abertos. As contagens de `converted`/`skipped`, `force` e o bruto novo ou alterado seguem como antes. Limitação: um membro que falhou numa rodada anterior (sem Parquet) não é reexaminado enquanto os demais membros do mesmo arquivo estiverem em dia; `force` ou alterar o arquivo reabre o contêiner.
+
 ### Adicionado
 - Testes: identidade do registro conferida.
 
 ### Alterado
+- Piso de `quantilica-analytics` do extra `analysis` sobe para 0.15.0 (`LakeWriter.origin_recorded`).
 - CI e infraestrutura alinhados ao template (fetcher-template v0.2.1).
 
 ### Corrigido
