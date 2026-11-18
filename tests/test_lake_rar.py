@@ -285,7 +285,9 @@ def test_rar_via_7zip_converte_ate_parquet(
     assert df["totmes_final"][0] == 1400.50
     listing, *extractions = fake.calls
     assert listing[1:5] == ["l", "-slt", "-ba", "-sccUTF-8"]
-    assert [c[-1] for c in extractions] == [CSV_NAME, TXT_NAME]
+    # cada membro é aberto duas vezes: a conferência de "só cabeçalho", que
+    # precede a primeira gravação (lista de saídas), e a conversão
+    assert [c[-1] for c in extractions] == [CSV_NAME, TXT_NAME] * 2
     assert all("-so" in c and "-spd" in c for c in extractions)
     # reconversão: nada novo
     res2 = converter.convert(raw.parent, lk)

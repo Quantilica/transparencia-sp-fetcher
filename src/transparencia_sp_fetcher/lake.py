@@ -18,13 +18,7 @@ from pathlib import Path
 
 try:
     import polars as pl
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-    from quantilica.analytics.lake import (
-        ConvertResult,
-        LakeWriter,
-        footer_from_metadata,
-    )
+    from quantilica.analytics.lake import ConvertResult, LakeWriter, output_id
     from quantilica.core.lake import (
         DatasetDescriptor,
         composite_file_key,
@@ -261,11 +255,14 @@ def _transcode_to_utf8(chunks: Iterable[bytes], dest: Path, encoding: str) -> No
 
 
 @contextmanager
-def _member_as_utf8(path: Path, kind: str, name: str | None) -> Iterator[Path]:
+def _member_as_utf8(
+    path: Path, kind: str, name: str | None, content: bytes | None = None
+) -> Iterator[Path]:
     """CSV do membro em UTF-8 num diretório temporário.
 
     ``QUANTILICA_LAKE_SCRATCH`` move o temporário para outro disco. Byte inválido na
-    última codificação da lista vira erro (sem ``errors="replace"``).
+    última codificação da lista vira erro (sem ``errors="replace"``). ``content``,
+    quando dado, são os bytes do membro já lidos (não os lê de novo do arquivo).
     """
     attempts = _ENCODINGS[kind]
     with tempfile.TemporaryDirectory(
@@ -274,7 +271,12 @@ def _member_as_utf8(path: Path, kind: str, name: str | None) -> Iterator[Path]:
         dest = Path(tmp) / "membro.csv"
         for idx, enc in enumerate(attempts):
             try:
-                _transcode_to_utf8(_member_chunks(path, kind, name), dest, enc)
+                chunks = (
+                    [content]
+                    if content is not None
+                    else _member_chunks(path, kind, name)
+                )
+                _transcode_to_utf8(chunks, dest, enc)
                 break
             except UnicodeDecodeError:
                 if idx == len(attempts) - 1:
@@ -462,38 +464,51 @@ def _write_member(
     raw_file: Path,
     partitions: dict[str, int],
     key: str,
+    origin_outputs: list[str] | None = None,
 ):
     """Escreve um membro; ``None`` se ele só tiver cabeçalho."""
     lf = _member_frame(csv_path, partitions)
     if lf is None:
         return None
     return writer.write_polars(
-        lf, src=raw_file, partitions=partitions, file_key_name=key
+        lf,
+        src=raw_file,
+        partitions=partitions,
+        file_key_name=key,
+        origin_outputs=origin_outputs,
     )
 
 
-def _recorded_keys(dataset_dir: Path) -> dict[str, set[str]]:
-    """``{arquivo de origem: chaves de arquivo}`` lidos só dos rodapés do dataset.
+#: Um membro só com cabeçalho é pequeno; acima disso nem se confere.
+_PRESCAN_BYTES = 64 * 1024
 
-    Serve para contar os membros de um arquivo pulado sem abri-lo: cada membro
-    convertido deixou um ``file_key`` no rodapé do seu Parquet, citando o arquivo
-    de origem.
+
+def _only_header(raw_file: Path, kind: str, name: str | None) -> bool:
+    """Se o membro só tem cabeçalho (não gera Parquet), como :func:`_write_member`.
+
+    Só um membro pequeno é conferido, com a mesma leitura da gravação
+    (:func:`_member_frame`); um grande, ilegível ou duvidoso conta como dado, o
+    que só custa reabrir o arquivo no build seguinte. Serve para a lista de
+    saídas do arquivo, que não pode ter um membro que nunca é gravado.
     """
-    found: dict[str, set[str]] = {}
-    if not dataset_dir.is_dir():
-        return found
-    for parquet in sorted(dataset_dir.rglob("*.parquet")):
-        if ".tmp" in parquet.relative_to(dataset_dir).parts:
-            continue
-        try:
-            footer = footer_from_metadata(pq.read_metadata(parquet))
-        except (OSError, pa.ArrowException):
-            continue
-        origin = footer.get("quantilica.origin_file")
-        key = footer.get("quantilica.file_key")
-        if origin and key:
-            found.setdefault(origin, set()).add(key)
-    return found
+    parts: list[bytes] = []
+    seen = 0
+    chunks = _member_chunks(raw_file, kind, name)
+    try:
+        for chunk in chunks:
+            seen += len(chunk)
+            if seen > _PRESCAN_BYTES:
+                return False
+            parts.append(chunk)
+    except Exception:
+        return False
+    finally:
+        chunks.close()
+    try:
+        with _member_as_utf8(raw_file, kind, name, b"".join(parts)) as csv_path:
+            return _member_frame(csv_path, {"ano": 0, "mes": 0}) is None
+    except Exception:
+        return False
 
 
 class TransparenciaSpLakeConverter:
@@ -537,8 +552,6 @@ class TransparenciaSpLakeConverter:
             lake_path / self.source_id / "remuneracao", descriptor, force=force
         )
 
-        recorded: dict[str, set[str]] | None = None
-
         # Gather active raw files
         all_raw_files = [f for f in input_path.rglob("*") if f.is_file()]
         active_files = select_current(all_raw_files)
@@ -566,11 +579,11 @@ class TransparenciaSpLakeConverter:
                 # Decisão de pular antes de qualquer acesso ao bruto (o bruto pode
                 # estar em disco de rede lento): só o sidecar e os rodapés do lake.
                 # Os membros de um contêiner só são conhecidos depois de aberto;
-                # basta que todo Parquet que cita o arquivo registre o sha256 atual.
-                if writer.origin_recorded(raw_file):
-                    if recorded is None:
-                        recorded = _recorded_keys(writer.dataset_dir)
-                    res.skipped += max(len(recorded.get(raw_file.name, ())), 1)
+                # cada Parquet declara a lista de saídas do arquivo
+                # (origin_outputs) e o pulo exige que todas existam, de modo que
+                # uma conversão interrompida ou um membro que falha reabre o arquivo.
+                if writer.origin_complete(raw_file):
+                    res.skipped += len(writer.origin_outputs(raw_file) or ()) or 1
                     continue
                 kind = _container_kind(raw_file)
                 members = _member_names(raw_file, kind)
@@ -581,6 +594,15 @@ class TransparenciaSpLakeConverter:
                 res.errors.append(f"{raw_file.name}: arquivo ilegível: {exc}")
                 continue
 
+            # Todas as saídas do arquivo, antes da primeira gravação. Um membro que
+            # falha fica na lista e nunca é gravado: o arquivo é reaberto a cada
+            # build e o erro volta, como sem o pulo. O que só tem cabeçalho nunca
+            # dá saída e é erro de ninguém: fora da lista.
+            outputs = [
+                output_id(partitions, composite_file_key(raw_file, name).lower())
+                for name in members
+                if not _only_header(raw_file, kind, name)
+            ]
             for name in members:
                 label = name or raw_file.name
                 # Um arquivo de origem por membro: chave composta arquivo+membro.
@@ -589,14 +611,17 @@ class TransparenciaSpLakeConverter:
                 key = composite_file_key(raw_file, name).lower()
                 try:
                     if writer.is_current(
-                        raw_file, partitions=partitions, file_key_name=key
+                        raw_file,
+                        partitions=partitions,
+                        file_key_name=key,
+                        origin_outputs=outputs,
                     ):
                         res.skipped += 1
                         continue
                     with _member_as_utf8(raw_file, kind, name) as csv_path:
                         try:
                             written = _write_member(
-                                writer, csv_path, raw_file, partitions, key
+                                writer, csv_path, raw_file, partitions, key, outputs
                             )
                         except Exception as exc:
                             if not _is_ragged_error(exc):
@@ -610,7 +635,7 @@ class TransparenciaSpLakeConverter:
                                 changed,
                             )
                             written = _write_member(
-                                writer, fixed, raw_file, partitions, key
+                                writer, fixed, raw_file, partitions, key, outputs
                             )
                         if written is None:
                             continue

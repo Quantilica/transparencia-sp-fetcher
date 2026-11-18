@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from quantilica.core import manifests
 
 import transparencia_sp_fetcher.lake as lake_mod
 from transparencia_sp_fetcher.lake import converter
@@ -99,6 +100,19 @@ def acessos(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     monkeypatch.setattr(builtins, "open", aberto)
     monkeypatch.setattr(io, "open", aberto)
+
+    original_path_open = Path.open
+
+    def path_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if "raw" in self.parts and not self.name.endswith(".manifest.json"):
+            vistos.append(f"Path.open:{self}")
+        return original_path_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", path_open)
+    # O sha256 vem do sidecar: calcular o hash lendo o bruto é acesso ao bruto.
+    monkeypatch.setattr(
+        manifests, "sha256_file", espia("sha256_file", manifests.sha256_file)
+    )
     return vistos
 
 
@@ -175,3 +189,89 @@ def test_arquivo_sem_parquet_continua_sendo_reexaminado(
         res = converter.convert(raw.parent, lake, datasets=["remuneracao"])
         assert (res.converted, res.skipped, res.errors) == (0, 0, [])
         assert "ZipFile" in acessos
+
+
+def _parquets(lake: Path) -> int:
+    return len(list((lake / "transparencia-sp").rglob("*.parquet")))
+
+
+def _falha_gravando(monkeypatch: pytest.MonkeyPatch, trecho: str) -> None:
+    """Faz falhar a gravação do membro cuja chave contém ``trecho``."""
+    original = lake_mod.LakeWriter.write_polars
+
+    def falha(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if trecho in (kwargs.get("file_key_name") or "").lower():
+            raise RuntimeError(f"falha simulada em {trecho}")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(lake_mod.LakeWriter, "write_polars", falha)
+
+
+def test_zip_interrompido_num_membro_e_completado_na_rodada_seguinte(
+    tmp_path: Path, acessos: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw, lake = _bruto(tmp_path), tmp_path / "lake"
+    with monkeypatch.context() as m:
+        _falha_gravando(m, "2024-06__b")  # a.csv grava, b.csv falha
+        res = converter.convert(raw, lake, datasets=["remuneracao"])
+    assert len(res.errors) == 1 and "falha simulada" in res.errors[0]
+    antes = _parquets(lake)
+
+    acessos.clear()
+    res2 = converter.convert(raw, lake, datasets=["remuneracao"])
+    assert res2.errors == []
+    assert res2.converted == 1  # só o b.csv
+    assert res2.skipped == antes  # o que já estava no lake
+    assert _parquets(lake) == antes + 1
+    assert "ZipFile" in acessos
+
+    acessos.clear()
+    res3 = converter.convert(raw, lake, datasets=["remuneracao"])
+    assert (res3.converted, res3.errors) == (0, [])
+    assert res3.skipped == antes + 1
+    assert acessos == []
+
+
+def test_membro_com_erro_segue_dando_erro_a_cada_build(
+    tmp_path: Path, acessos: list[str]
+) -> None:
+    raw, lake = _bruto(tmp_path), tmp_path / "lake"
+    z = raw / "remuneracao" / "remuneracao_2024-06@20261101.zip"
+    with zipfile.ZipFile(z, "a") as zf:
+        # sem cabeçalho e com largura que não é a atual: nomes não inferíveis
+        zf.writestr("ruim.csv", b"FULANO;1.400,00;x\n")
+    _sidecar(z)
+    for rodada in range(3):
+        acessos.clear()
+        res = converter.convert(raw, lake, datasets=["remuneracao"])
+        assert len(res.errors) == 1 and "ruim.csv" in res.errors[0]
+        assert "ZipFile" in acessos  # o ZIP é reaberto a cada build
+        if rodada:
+            assert res.converted == 0
+
+
+def test_lake_sem_declaracao_reconverte_uma_vez_e_depois_pula(
+    tmp_path: Path, acessos: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw, lake = _bruto(tmp_path), tmp_path / "lake"
+    original = lake_mod.LakeWriter.write_polars
+
+    def sem(self: Any, *a: Any, **k: Any) -> Any:
+        k.pop("origin_outputs", None)  # lake gravado antes da declaração
+        return original(self, *a, **k)
+
+    with monkeypatch.context() as m:
+        m.setattr(lake_mod.LakeWriter, "write_polars", sem)
+        res = converter.convert(raw, lake, datasets=["remuneracao"])
+    n = res.converted
+    assert n >= 3 and res.errors == []
+
+    acessos.clear()
+    res2 = converter.convert(raw, lake, datasets=["remuneracao"])
+    assert (res2.converted, res2.skipped, res2.errors) == (n, 0, [])
+    assert acessos
+
+    acessos.clear()
+    res3 = converter.convert(raw, lake, datasets=["remuneracao"])
+    assert (res3.converted, res3.skipped, res3.errors) == (0, n, [])
+    assert acessos == []
