@@ -5,19 +5,20 @@ Todas as alterações notáveis neste projeto serão documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
-## [Não lançado]
-
-### Corrigido
-- `lake`: o build sem mudança não lê mais o bruto. Antes de qualquer acesso ao arquivo (assinatura, diretório central do ZIP, listagem do RAR), o conversor confere `origin_complete`: cada Parquet declara a lista de todas as saídas do arquivo (`origin_outputs`, os membros, listados antes da primeira gravação) e o arquivo só é pulado, sem ser aberto, quando todas existem com o sha256 atual (do sidecar, sem ler o arquivo). Uma conversão interrompida ou um membro que falha deixa a declaração incompleta e o arquivo é reaberto e o erro contado a cada build, como antes. Membro só com cabeçalho (que não gera Parquet) é conferido antes da primeira gravação, só quando é pequeno, e fica fora da lista; um membro grande sem dado só custa reabrir o arquivo. Lake gravado sem a declaração reconverte uma vez e depois pula. Os sidecars `.manifest.json` deixam de ser abertos. As contagens de `converted`/`skipped`, `force` e o bruto novo ou alterado seguem como antes.
+## [0.2.6] - 2026-11-19
 
 ### Adicionado
+
 - Testes: identidade do registro conferida.
 
 ### Alterado
+
 - Piso de `quantilica-analytics` do extra `analysis` sobe para 0.15.0 (`origin_outputs`, `LakeWriter.origin_complete`).
 - CI e infraestrutura alinhados ao template (fetcher-template v0.2.1).
 
 ### Corrigido
+
+- `lake`: o build sem mudança não lê mais o bruto. Antes de qualquer acesso ao arquivo (assinatura, diretório central do ZIP, listagem do RAR), o conversor confere `origin_complete`: cada Parquet declara a lista de todas as saídas do arquivo (`origin_outputs`, os membros, listados antes da primeira gravação) e o arquivo só é pulado, sem ser aberto, quando todas existem com o sha256 atual (do sidecar, sem ler o arquivo). Uma conversão interrompida ou um membro que falha deixa a declaração incompleta e o arquivo é reaberto e o erro contado a cada build, como antes. Membro só com cabeçalho (que não gera Parquet) é conferido antes da primeira gravação, só quando é pequeno, e fica fora da lista; um membro grande sem dado só custa reabrir o arquivo. Lake gravado sem a declaração reconverte uma vez e depois pula. Os sidecars `.manifest.json` deixam de ser abertos. As contagens de `converted`/`skipped`, `force` e o bruto novo ou alterado seguem como antes.
 - CI: o pyproject declara o PyPI antes do índice Quantilica (`[[tool.uv.index]]`), e o workflow perde `--index` e `--index-strategy`. Com a estratégia padrão `first-index`, o `uv sync` só consulta o índice para o que não está no PyPI (`quantilica-analytics`) e deixa de receber o 503 intermitente que o GitHub Pages devolve a caminhos inexistentes.
 
 ## [0.2.5] - 2026-11-14
