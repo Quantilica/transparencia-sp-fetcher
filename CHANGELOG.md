@@ -5,6 +5,12 @@ Todas as alterações notáveis neste projeto serão documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Não lançado]
+
+### Adicionado
+
+- `lake`: o conversor passa a expor `inventory(input_dir)`, que diz à auditoria de cobertura o que cada bruto é. Os contêineres e CSVs mensais vigentes (`rar`, `historico`, `corrente`) seguem esperando Parquet; o dicionário de dados (XLSX) e o que o conversor não abre são `nao_tabular`; versão anterior de um bruto é `superado`; e os 145 Parquets de `derivados/remuneracao_AAAA-MM@...` (acervo da coleta antiga, de 2012-06 a 2024-06) são `gemeo` do contêiner do mesmo mês, que é o que o conversor lê (a contagem de linhas bate em 144 dos 145 meses; em 2018-03 o derivado vem de outra versão do contêiner, 1.085.144 linhas contra 1.078.798 do vigente, e como o lake vale só pela versão vigente ele não entra: fica no bruto como acervo). Um derivado cujo mês não tem contêiner vigente no bruto continua esperando Parquet, e a auditoria o acusa: o inventário nunca esconde um mês que só existe como derivado. Antes, a auditoria local reprovava a fonte com 146 `sem_parquet` (145 derivados e o dicionário).
+
 ## [0.2.6] - 2026-11-19
 
 ### Adicionado

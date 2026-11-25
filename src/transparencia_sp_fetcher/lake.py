@@ -21,6 +21,7 @@ try:
     from quantilica.analytics.lake import ConvertResult, LakeWriter, output_id
     from quantilica.core.lake import (
         DatasetDescriptor,
+        Planned,
         composite_file_key,
         partition_types_for,
         select_current,
@@ -319,6 +320,14 @@ def _is_auxiliary(filename: str) -> bool:
     return bool(_AUXILIARY_RE.match(base))
 
 
+def _derivado_de_mes_convertido(
+    f: Path, meses_com_conteiner: set[tuple[int, int]]
+) -> bool:
+    """Parquet do acervo cujo mês o conversor já lê de um contêiner vigente."""
+    period = _extract_year_month(f.name)
+    return period is not None and period in meses_com_conteiner
+
+
 def _is_ragged_error(exc: BaseException) -> bool:
     return "more fields than defined" in str(exc)
 
@@ -511,6 +520,18 @@ def _only_header(raw_file: Path, kind: str, name: str | None) -> bool:
         return False
 
 
+#: Sufixos que o conversor abre (contêiner RAR/ZIP ou CSV/TXT solto).
+_DATA_SUFFIXES = (".rar", ".zip", ".csv", ".txt")
+
+
+def _arquivos_brutos(input_path: Path) -> list[Path]:
+    return [
+        f
+        for f in sorted(input_path.rglob("*"))
+        if f.is_file() and not f.name.endswith((".manifest.json", ".tmp"))
+    ]
+
+
 class TransparenciaSpLakeConverter:
     """Converts SP public servant payroll data into Universal Hive Parquet Lake."""
 
@@ -520,6 +541,50 @@ class TransparenciaSpLakeConverter:
     def datasets(self) -> list[str]:
         """Return available dataset identifiers."""
         return list(DATASETS)
+
+    def inventory(self, input_dir: Path) -> list[Planned]:
+        """O que o conversor faz com cada bruto, para a cobertura da auditoria.
+
+        - Os contêineres e CSVs mensais vigentes (``rar``, ``historico``,
+          ``corrente``) alimentam o dataset ``remuneracao`` e devem gerar Parquet.
+        - O dicionário de dados (XLSX) e qualquer arquivo que o conversor não abre
+          são ``nao_tabular``.
+        - Versão anterior de um bruto que tem outra mais nova é ``superado``.
+        - ``derivados/remuneracao_AAAA-MM@...parquet`` são o mesmo mês já em Parquet
+          (acervo da coleta antiga). O conversor lê o contêiner do mesmo mês, não
+          o Parquet: com o contêiner vigente do mês no bruto o derivado é ``gemeo``
+          (o lake vale pela versão vigente do contêiner; o derivado fica como acervo).
+          Sem ele, o derivado fica esperando Parquet que ninguém gera, e a
+          auditoria o acusa: nunca se esconde um mês que só existe como derivado.
+        """
+        input_path = Path(input_dir)
+        if not input_path.is_dir():
+            return []
+        arquivos = _arquivos_brutos(input_path)
+        vigentes = set(select_current(arquivos))
+        meses_com_conteiner = {
+            period
+            for f in vigentes
+            if f.suffix.lower() in _DATA_SUFFIXES
+            and not _is_auxiliary(f.name)
+            and (period := _extract_year_month(f.name)) is not None
+        }
+        planned: list[Planned] = []
+        for f in arquivos:
+            suffix = f.suffix.lower()
+            if _is_auxiliary(f.name):
+                planned.append(Planned(f, skip_reason="nao_tabular"))
+            elif f not in vigentes:
+                planned.append(Planned(f, skip_reason="superado"))
+            elif suffix == ".parquet" and _derivado_de_mes_convertido(
+                f, meses_com_conteiner
+            ):
+                planned.append(Planned(f, skip_reason="gemeo"))
+            elif suffix == ".parquet" or suffix in _DATA_SUFFIXES:
+                planned.append(Planned(f, dataset="remuneracao"))
+            else:
+                planned.append(Planned(f, skip_reason="nao_tabular"))
+        return planned
 
     def convert(
         self,
