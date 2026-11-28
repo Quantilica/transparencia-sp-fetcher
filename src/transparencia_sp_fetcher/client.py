@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urljoin
 
 from quantilica.core.exceptions import FetchError
 from quantilica.core.http import (
@@ -17,11 +18,7 @@ from quantilica.core.http import (
 )
 from quantilica.core.logging import get_logger
 
-from .constants import (
-    DOWNLOAD_HISTORICO_URL,
-    REMUNERACAO_PAGE_URL,
-    TRANSPARENCIA_SP_BASE_URL,
-)
+from .constants import REMUNERACAO_PAGE_URL, TRANSPARENCIA_SP_BASE_URL
 
 logger = get_logger(__name__)
 
@@ -43,7 +40,8 @@ _MESES = {
 
 # Rótulo da linha da tabela: ``<strong>2026 - Agosto</strong>``.
 _LABEL_RE = re.compile(r"^\s*(\d{4})\s*-\s*(.+?)\s*$")
-# Link de download da mesma linha: ``.../downloadhistorico?id=71&f=zip``.
+# Link de download da mesma linha: ``.../downloadhistorico?id=71&f=zip``. O id sai
+# do ``href``; a URL de download é o ``href`` como a página o publica.
 _LINK_RE = re.compile(r"downloadhistorico\?(?:[^#]*&)?id=(\d+)", re.IGNORECASE)
 
 # Sondagem dos meses listados: um HEAD (ou GET só de cabeçalhos) por mês, com ritmo
@@ -54,6 +52,15 @@ SONDAGEM_POLICY = HostPolicy(
     backoff_base=15.0,
     backoff_max=120.0,
 )
+# Sondagem barata: um mês que não responde logo não pode custar o tempo de um
+# download. Tempo limite e tentativas só da sondagem (o download usa os do host).
+# Pior caso até a parada por falhas seguidas: 5 meses x 2 tentativas x 20 s, cerca
+# de 3,5 min, mais as esperas entre tentativas e o ritmo por host.
+SONDAGEM_TIMEOUT = 20.0
+SONDAGEM_ATTEMPTS = 2
+SONDAGEM_RETRY_DELAY = 1.0
+# Lê só o primeiro byte: a sondagem nunca baixa o arquivo (centenas de MB).
+SONDAGEM_HEADERS = {"Range": "bytes=0-0"}
 # Falhas seguidas (que não sejam 404) a partir das quais a sondagem para: a fonte
 # está bloqueando ou fora do ar, e esperar o retry de dezenas de meses não ajuda.
 _MAX_FALHAS_SEGUIDAS = 5
@@ -70,6 +77,7 @@ class LinhaHistorico:
     ano: int
     mes_nome: str
     file_id: str | None
+    href: str | None = None
 
 
 class _TabelaHistorico(HTMLParser):
@@ -85,17 +93,19 @@ class _TabelaHistorico(HTMLParser):
         self.links_sem_rotulo = 0
         self._rotulo: tuple[int, str] | None = None
         self._file_id: str | None = None
+        self._href: str | None = None
         self._em_strong = False
         self._texto: list[str] = []
 
     def _fecha_linha(self) -> None:
         if self._rotulo is not None:
             ano, mes_nome = self._rotulo
-            self.linhas.append(LinhaHistorico(ano, mes_nome, self._file_id))
+            self.linhas.append(LinhaHistorico(ano, mes_nome, self._file_id, self._href))
         elif self._file_id is not None:
             self.links_sem_rotulo += 1
         self._rotulo = None
         self._file_id = None
+        self._href = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "tr":
@@ -108,6 +118,7 @@ class _TabelaHistorico(HTMLParser):
             achado = _LINK_RE.search(href)
             if achado and self._file_id is None:
                 self._file_id = achado.group(1)
+                self._href = href
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "tr":
@@ -170,6 +181,10 @@ class TransparenciaSpClient:
             client = _default_http_client()
             host = self.base_url.split("//", 1)[-1].split("/", 1)[0].lower()
             client.host_policies.setdefault(host, SONDAGEM_POLICY)
+            # Só da descoberta: este cliente não baixa arquivo.
+            client.timeout = SONDAGEM_TIMEOUT
+            client.attempts = SONDAGEM_ATTEMPTS
+            client.retry_base_delay = SONDAGEM_RETRY_DELAY
         self.client = client
         self.logger = logger or get_logger(__name__)
 
@@ -177,9 +192,11 @@ class TransparenciaSpClient:
         """Fecha o cliente HTTP."""
         self.client.close()
 
-    def _ler_pagina(self) -> str:
+    def _ler_pagina(self) -> tuple[str, str]:
+        """Devolve o HTML e a URL final da página (base dos links relativos)."""
         try:
-            return self.client.get(REMUNERACAO_PAGE_URL).text
+            resposta = self.client.get(REMUNERACAO_PAGE_URL)
+            return resposta.text, str(resposta.url)
         except Exception as exc:
             raise DiscoveryError(
                 f"Página de remuneração ilegível ({REMUNERACAO_PAGE_URL}): {exc}"
@@ -188,18 +205,23 @@ class TransparenciaSpClient:
     def _sondar(self, item: dict[str, Any]) -> str:
         """Sonda o arquivo do mês: ``ok``, ``nao_publicado`` ou ``falhou``.
 
-        404 é a resposta esperada da fonte para um mês listado e ainda não
-        publicado. Qualquer outra coisa (exceção, 403, 429, 5xx, HTML no lugar do
-        arquivo) não prova que o arquivo não existe: é ``falhou``.
+        A sondagem lê só cabeçalhos (``Range: bytes=0-0``; o corpo nunca é lido).
+        O endpoint responde 405 ao HEAD e o ``head_or_get`` cai num GET com
+        ``Range``. 404 (mês listado e ainda não publicado) e 405 que persiste
+        no GET (indisponível agora) deixam o mês fora do catálogo, com aviso:
+        é o estado normal da fonte. Qualquer outra coisa (exceção, 403, 429, 5xx,
+        HTML no lugar do arquivo) não prova que o arquivo não existe: é ``falhou``.
         """
         try:
-            probe = self.client.head_or_get(item["url"])
+            probe = self.client.head_or_get(item["url"], headers=SONDAGEM_HEADERS)
         except Exception as exc:  # noqa: BLE001 - qualquer falha de rede ou de status
-            if isinstance(exc, HttpStatusError) and exc.status_code == 404:
+            if isinstance(exc, HttpStatusError) and exc.status_code in (404, 405):
                 self.logger.warning(
-                    "Histórico %s listado na página, mas ainda não publicado "
-                    "(HTTP 404): fora do catálogo",
+                    "Histórico %s listado na página, mas não disponível agora "
+                    "(HTTP %s, %s): fora do catálogo",
                     item["label"],
+                    exc.status_code,
+                    item["url"],
                 )
                 return "nao_publicado"
             self.logger.warning(
@@ -228,8 +250,10 @@ class TransparenciaSpClient:
         tem um ``id`` numérico publicado na tabela da página. A descoberta lê
         essa tabela, linha a linha, para não depender de ids fixos.
 
-        Cada mês com link é sondado. 404 é "ainda não publicado" e o mês fica de
-        fora (registrado em ``warning``). Falha de qualquer outro tipo na sondagem
+        Cada mês com link é sondado, e o download usa o link como a página o
+        publica (o ``href`` da linha, resolvido contra a URL da página). 404 é
+        "ainda não publicado" e 405 persistente é "indisponível agora": o mês fica
+        de fora (registrado em ``warning``). Falha de qualquer outro tipo na sondagem
         (exceção, 403, 429, 5xx, HTML no lugar do arquivo) não prova ausência: o
         mês entra no catálogo assim mesmo e o download decide, contando o erro (o
         ``sync`` sai 3 ou 1). Assim um bloqueio da fonte nunca esvazia a série
@@ -241,9 +265,10 @@ class TransparenciaSpClient:
         Raises:
             DiscoveryError: A página não pôde ser lida, não tem nenhuma linha
                 ``AAAA - Mês`` reconhecível ou nenhuma linha com link utilizável
-                (a marcação mudou), ou todos os meses listados deram 404.
+                (a marcação mudou), ou todos os meses listados deram 404 ou 405.
         """
-        linhas, links_sem_rotulo = parse_historico_page(self._ler_pagina())
+        html, base = self._ler_pagina()
+        linhas, links_sem_rotulo = parse_historico_page(html)
         if links_sem_rotulo:
             self.logger.warning(
                 "%d link(s) downloadhistorico em linha sem rótulo 'AAAA - Mês': "
@@ -280,7 +305,7 @@ class TransparenciaSpClient:
                     "ano": linha.ano,
                     "mes": mes,
                     "label": label,
-                    "url": f"{DOWNLOAD_HISTORICO_URL}?id={linha.file_id}&f=zip",
+                    "url": urljoin(base, linha.href or ""),
                 }
             )
         if not itens:
@@ -325,6 +350,6 @@ class TransparenciaSpClient:
         if not arquivos:
             raise DiscoveryError(
                 f"Todos os {nao_publicados} mês(es) listados na página de remuneração "
-                "deram 404: nenhum arquivo histórico publicado?"
+                "deram 404 ou 405: nenhum arquivo histórico disponível?"
             )
         return sorted(arquivos, key=lambda a: (a["ano"], a["mes"]))

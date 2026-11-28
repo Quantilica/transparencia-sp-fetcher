@@ -11,7 +11,10 @@ from quantilica.core.http import HttpClient
 
 from transparencia_sp_fetcher import catalog
 from transparencia_sp_fetcher.client import (
+    SONDAGEM_ATTEMPTS,
+    SONDAGEM_HEADERS,
     SONDAGEM_POLICY,
+    SONDAGEM_TIMEOUT,
     DiscoveryError,
     TransparenciaSpClient,
     parse_historico_page,
@@ -298,7 +301,7 @@ def test_mes_desconhecido_e_ignorado_mas_o_resto_segue(
 def test_todos_os_meses_404_e_erro() -> None:
     pagina = _pagina(_linha(2026, "Agosto", "71"), _linha(2026, "Setembro", "72"))
     handler = _servidor(pagina, {"71": (404, "text/html"), "72": (404, "text/html")})
-    with pytest.raises(DiscoveryError, match="deram 404"):
+    with pytest.raises(DiscoveryError, match="deram 404 ou 405"):
         _cliente(handler).list_historico()
 
 
@@ -338,4 +341,115 @@ def test_sem_o_host_instalado_usa_cliente_do_core_com_ssl_do_ambiente(
     cliente = TransparenciaSpClient()
     assert cliente.client.verify is False
     assert "www.transparencia.sp.gov.br" in cliente.client.host_policies
+    cliente.close()
+
+
+# --- link como publicado, sondagem sem baixar, 405 --------------------------
+
+
+class _CorpoGrande(httpx2.SyncByteStream):
+    """Corpo que acusa se alguém o lê (a sondagem nunca pode baixar)."""
+
+    lido = 0
+
+    def __iter__(self):
+        type(self).lido += 1
+        yield b"x" * 1024
+
+
+def test_url_e_o_href_como_a_pagina_publica() -> None:
+    """O href, resolvido contra a página, vira a URL; ``f=zip`` vem junto."""
+    pagina = _pagina(_linha(2026, "Agosto", "71"), _linha(2026, "Maio", "68"))
+    handler = _servidor(pagina, {"71": (200, ZIP), "68": (200, ZIP)})
+    itens = _cliente(handler).list_historico()
+    assert [i["url"] for i in itens] == [
+        "https://www.transparencia.sp.gov.br/Remuneracao/downloadhistorico?id=68&f=zip",
+        "https://www.transparencia.sp.gov.br/Remuneracao/downloadhistorico?id=71&f=zip",
+    ]
+    assert [i["id"] for i in itens] == ["68", "71"]
+
+
+def test_href_sem_f_nao_ganha_parametro_inventado() -> None:
+    pagina = (
+        "<table><tr><td><strong>2026 - Agosto</strong></td><td>"
+        '<a href="/Remuneracao/downloadhistorico?id=71">Baixar</a></td></tr>'
+        "<tr><td><strong>2026 - Julho</strong></td><td>"
+        '<a href="https://www.transparencia.sp.gov.br/Remuneracao/'
+        'downloadhistorico?id=70&amp;f=zip&amp;x=1">Baixar</a></td></tr></table>'
+    )
+    handler = _servidor(pagina, {"70": (200, ZIP), "71": (200, ZIP)})
+    itens = _cliente(handler).list_historico()
+    urls = {i["id"]: i["url"] for i in itens}
+    assert urls["71"].endswith("/Remuneracao/downloadhistorico?id=71")
+    assert urls["70"].endswith("downloadhistorico?id=70&f=zip&x=1")
+    sondados = {p[1] for p in handler.pedidos if "downloadhistorico" in p[1]}
+    assert not any("f=" in u for u in sondados if u.endswith("id=71"))
+
+
+def test_entidade_no_nome_do_mes_e_decodificada() -> None:
+    """``Mar&ccedil;o`` é Março: o mês não pode sumir por causa da entidade."""
+    pagina = _pagina(
+        _linha(2024, "Mar&ccedil;o", "41"), _linha(2025, "Mar&#231;o", "53")
+    )
+    handler = _servidor(pagina, {"41": (200, ZIP), "53": (200, ZIP)})
+    itens = _cliente(handler).list_historico()
+    assert [i["label"] for i in itens] == ["2024-03", "2025-03"]
+
+
+def test_sondagem_le_so_cabecalhos_com_range_e_nao_baixa_o_corpo() -> None:
+    """HEAD 405 (como a fonte) cai num GET com Range, que não lê o corpo."""
+    pagina = _pagina(_linha(2026, "Março", "66"))
+    pedidos: list[httpx2.Request] = []
+    _CorpoGrande.lido = 0
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        pedidos.append(request)
+        if request.url.path == PAGE_PATH:
+            return httpx2.Response(200, text=pagina)
+        if request.method == "HEAD":
+            return httpx2.Response(405)
+        return httpx2.Response(
+            206,
+            headers={"content-type": "application/octet-stream"},
+            stream=_CorpoGrande(),
+        )
+
+    itens = _cliente(handler).list_historico()
+    assert [i["label"] for i in itens] == ["2026-03"]
+    arquivos = [r for r in pedidos if r.url.path != PAGE_PATH]
+    assert [r.method for r in arquivos] == ["HEAD", "GET"]
+    assert all(r.headers["range"] == SONDAGEM_HEADERS["Range"] for r in arquivos)
+    assert _CorpoGrande.lido == 0
+
+
+def test_405_persistente_fica_fora_sem_virar_erro_e_sem_parar_a_sondagem(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """405 no HEAD e no GET: indisponível agora, igual ao 404; só aviso."""
+    pagina = _pagina(*(_linha(2026, m, str(40 + i)) for i, m in enumerate(MESES)))
+    arquivos = {str(40 + i): (405, "text/plain") for i in range(8)}
+    arquivos["47"] = (200, ZIP)
+    handler = _servidor(pagina, arquivos)
+    with caplog.at_level(logging.WARNING):
+        itens = _cliente(handler).list_historico()
+    assert [i["id"] for i in itens] == ["47"]  # nenhum 405 entrou como erro
+    assert "não disponível agora (HTTP 405" in caplog.text
+    assert "com sondagem falha" not in caplog.text
+    # os 8 meses foram sondados: 405 não conta como falha seguida
+    assert len({p[1] for p in handler.pedidos if "downloadhistorico" in p[1]}) == 8
+
+
+def test_todos_405_e_erro_de_descoberta() -> None:
+    pagina = _pagina(_linha(2026, "Agosto", "71"))
+    with pytest.raises(DiscoveryError, match="404 ou 405"):
+        _cliente(_servidor(pagina, {"71": (405, "text/plain")})).list_historico()
+
+
+def test_cliente_padrao_tem_sondagem_barata_e_pior_caso_de_poucos_minutos() -> None:
+    cliente = TransparenciaSpClient()
+    assert cliente.client.timeout == SONDAGEM_TIMEOUT
+    assert cliente.client.attempts == SONDAGEM_ATTEMPTS
+    # 5 falhas seguidas até a parada, no pior caso de tempo esgotado em tudo.
+    pior_caso = 5 * SONDAGEM_ATTEMPTS * SONDAGEM_TIMEOUT
+    assert pior_caso <= 300
     cliente.close()
