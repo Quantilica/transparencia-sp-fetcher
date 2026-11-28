@@ -105,9 +105,17 @@ def _rar_entries() -> list[dict[str, Any]]:
 
 
 def _historico_entries() -> list[dict[str, Any]]:
-    """Descobre a série histórica real (cache por processo)."""
+    """Descobre a série histórica real (cache por processo).
+
+    Uma falha da descoberta levanta ``DiscoveryError``: nunca vira catálogo vazio.
+    """
     global _HISTORICO_CACHE
     if _HISTORICO_CACHE is None:
+        client = TransparenciaSpClient()
+        try:
+            itens = client.list_historico()
+        finally:
+            client.close()
         _HISTORICO_CACHE = [
             DatasetEntry(
                 id=f"remuneracao_{item['label'].replace('-', '_')}",
@@ -119,7 +127,7 @@ def _historico_entries() -> list[dict[str, Any]]:
                 year=item["ano"],
                 month=item["mes"],
             ).to_dict()
-            for item in TransparenciaSpClient().list_historico()
+            for item in itens
         ]
     return _HISTORICO_CACHE
 

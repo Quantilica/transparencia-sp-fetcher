@@ -7,6 +7,22 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não lançado]
 
+### Corrigido
+
+- Descoberta do histórico: o mês deixa de receber o id de outro. A página era lida por uma expressão regular que atravessava linhas da tabela; um mês sem link de download herdava o id da linha seguinte (setembro ficava com o arquivo de outubro, e outubro sumia). O parser agora lê a tabela linha a linha (`html.parser`): cada linha tem o seu mês e, se houver, o seu id; mês sem link fica fora do catálogo, registrado em `warning`.
+- Descoberta do histórico: falha na sondagem de um mês não o tira mais do catálogo em silêncio. Só `404` (listado e ainda não publicado) deixa o mês de fora, com `warning`. Exceção, `403`, `429`, `5xx` ou HTML no lugar do arquivo fazem o mês entrar no catálogo assim mesmo; o download decide e conta o erro, e o `sync` sai com 3 (ou 1 se nada baixou). Depois de 5 falhas seguidas a sondagem para e os meses restantes entram sem sondar, em vez de esperar o retry de dezenas de meses.
+- Descoberta do histórico: página ilegível (`403`, `5xx`, rede), sem nenhuma linha `AAAA - Mês`, com linhas mas nenhum link de download, ou com todos os meses em `404`, levanta `DiscoveryError` (o `sync` sai 1) em vez de devolver catálogo vazio com saída 0. A falha não fica em cache no processo. Atenção: o catálogo é montado antes do download, então a falha derruba a execução inteira; `sync corrente dicionario` segue possível.
+- A sondagem usa o cliente padrão do host quando ele está instalado (respeita `QUANTILICA_HTTP_*`, `QUANTILICA_SSL_VERIFY` e o bundle de CA) e, sem o host, um cliente do core com a verificação TLS lida do ambiente. Antes era um `HttpClient()` sem nada disso.
+
+### Alterado
+
+- A sondagem dos meses listados segue um ritmo por host (uma requisição a cada 0,5 s, uma por vez, com pausa do host inteiro num `429`), para não parecer varredura ao firewall da fonte. O número de sondagens não muda (uma por mês com link); a descoberta passa a levar 0,5 s a mais por mês sondado.
+- Testes: `list_historico` ganha cobertura com transporte simulado (parser com mês sem link, `<tr>` sem fechamento, recorte realista da página, 404, 403, 429, 500, exceção de rede, HTML no lugar do arquivo, parada após falhas seguidas, página ilegível ou sem linhas, todos os meses em 404).
+
+### Removido
+
+- `TransparenciaSpClient.download_corrente`, `download_historico` e `download_dicionario`: chamavam `download_with_manifest` sem `source_id`, `dataset_id` e `producer` (e com `manifest_path=`, que não existe), isto é, `TypeError` certo na chamada real; os testes mockavam o método. Nada as usava: o download é do `sync` do host.
+
 ### Adicionado
 
 - `lake`: o conversor passa a expor `inventory(input_dir)`, que diz à auditoria de cobertura o que cada bruto é. Os contêineres e CSVs mensais vigentes (`rar`, `historico`, `corrente`) seguem esperando Parquet; o dicionário de dados (XLSX) e o que o conversor não abre são `nao_tabular`; versão anterior de um bruto é `superado`; e os 145 Parquets de `derivados/remuneracao_AAAA-MM@...` (acervo da coleta antiga, de 2012-06 a 2024-06) são `gemeo` do contêiner do mesmo mês, que é o que o conversor lê (a contagem de linhas bate em 144 dos 145 meses; em 2018-03 o derivado vem de outra versão do contêiner, 1.085.144 linhas contra 1.078.798 do vigente, e como o lake vale só pela versão vigente ele não entra: fica no bruto como acervo). Um derivado cujo mês não tem contêiner vigente no bruto continua esperando Parquet, e a auditoria o acusa: o inventário nunca esconde um mês que só existe como derivado. Antes, a auditoria local reprovava a fonte com 146 `sem_parquet` (145 derivados e o dicionário).
